@@ -32,17 +32,23 @@ CATEGORIES = [
 
 @st.cache_resource
 def get_database():
-    if not SERVICE_ACCOUNT_FILE.is_file():
-        raise FileNotFoundError(
-            f"Arquivo de credenciais não encontrado: {SERVICE_ACCOUNT_FILE.name}"
-        )
-
     try:
         app = firebase_admin.get_app()
     except ValueError:
-        app = firebase_admin.initialize_app(
-            credentials.Certificate(str(SERVICE_ACCOUNT_FILE))
-        )
+        try:
+            service_account = dict(st.secrets["firebase_service_account"])
+        except (KeyError, FileNotFoundError):
+            if not SERVICE_ACCOUNT_FILE.is_file():
+                raise FileNotFoundError(
+                    "Configure [firebase_service_account] em "
+                    ".streamlit/secrets.toml ou coloque o JSON de credenciais "
+                    f"na pasta do app: {SERVICE_ACCOUNT_FILE.name}"
+                )
+            credential = credentials.Certificate(str(SERVICE_ACCOUNT_FILE))
+        else:
+            credential = credentials.Certificate(service_account)
+
+        app = firebase_admin.initialize_app(credential)
     return firestore.client(app=app)
 
 
@@ -163,6 +169,14 @@ def load_transactions(db, user_id: str) -> list[dict]:
         transaction["id"] = record.id
         transactions.append(transaction)
     return sorted(transactions, key=lambda item: item["date"], reverse=True)
+
+
+def get_owned_transaction_ref(db, user_id: str, transaction_id: str):
+    transaction_ref = db.collection("lancamentos").document(transaction_id)
+    transaction = transaction_ref.get()
+    if not transaction.exists or transaction.to_dict().get("owner_id") != user_id:
+        raise PermissionError("O lançamento selecionado não pertence a esta conta.")
+    return transaction_ref
 
 
 def render_dashboard(db, user: dict):
@@ -288,7 +302,9 @@ def render_dashboard(db, user: dict):
                     st.error("Informe uma descrição.")
                 else:
                     try:
-                        db.collection("lancamentos").document(selected_id).update(
+                        get_owned_transaction_ref(
+                            db, user["id"], selected_id
+                        ).update(
                             {
                                 "type": edit_type,
                                 "description": edit_description.strip(),
@@ -301,14 +317,20 @@ def render_dashboard(db, user: dict):
                         st.rerun()
                     except GoogleAPICallError as error:
                         st.error(f"Não foi possível atualizar: {error}")
+                    except PermissionError as error:
+                        st.error(str(error))
 
             if st.button("Excluir lançamento selecionado", type="secondary"):
                 try:
-                    db.collection("lancamentos").document(selected_id).delete()
+                    get_owned_transaction_ref(
+                        db, user["id"], selected_id
+                    ).delete()
                     st.success("Lançamento excluído.")
                     st.rerun()
                 except GoogleAPICallError as error:
                     st.error(f"Não foi possível excluir: {error}")
+                except PermissionError as error:
+                    st.error(str(error))
 
 
 try:

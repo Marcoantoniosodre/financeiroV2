@@ -1,0 +1,5 @@
+__pycache__/
+.venv/
+venv/
+.streamlit/secrets.toml
+financeiro-b0c58-firebase-adminsdk-fbsvc-04f0310bd8.json
